@@ -130,9 +130,9 @@ func (o *kairosDBHttp) flush() error {
 		return fmt.Errorf("Error when building request: %s", err.Error())
 	}
 	req.Header.Set("Content-Type", "application/json")
-	//req.Header.Set("Content-Encoding", "gzip")
+	req.Header.Set("Content-Encoding", "identity")
 
-	if o.config.Username != "" || o.config.Password != "" {
+	if o.Username != "" || o.Password != "" {
 		req.SetBasicAuth(o.config.Username, o.config.Password)
 	}
 	if o.Debug {
