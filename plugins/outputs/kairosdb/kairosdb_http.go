@@ -23,6 +23,8 @@ type HttpMetric struct {
 type kairosDBHttp struct {
 	Host      string
 	Port      int
+	Username  string
+	Password  string
 	Scheme    string
 	User      *url.Userinfo
 	BatchSize int
@@ -130,6 +132,9 @@ func (o *kairosDBHttp) flush() error {
 	req.Header.Set("Content-Type", "application/json")
 	//req.Header.Set("Content-Encoding", "gzip")
 
+	if o.config.Username != "" || o.config.Password != "" {
+		req.SetBasicAuth(o.config.Username, o.config.Password)
+	}
 	if o.Debug {
 		dump, err := httputil.DumpRequestOut(req, false)
 		if err != nil {

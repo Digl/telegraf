@@ -32,6 +32,9 @@ type KairosDB struct {
 	Host string
 	Port int
 
+	Username string
+	Password string
+
 	HttpBatchSize int // deprecated httpBatchSize form in 1.8
 	HttpPath      string
 
@@ -51,6 +54,11 @@ var sampleConfig = `
 
   ## Port of the KairosDB server
   port = 4242
+
+  ## HTTP basic authentication
+  ## Leave username empty to disable
+  username = ""
+  password = ""
 
   ## Number of data points to send to KairosDB in Http requests.
   ## Not used with telnet API.
@@ -124,6 +132,8 @@ func (o *KairosDB) WriteHttp(metrics []telegraf.Metric, u *url.URL) error {
 	http := kairosDBHttp{
 		Host:      u.Host,
 		Port:      o.Port,
+		Username:  o.Username,
+		Password:  o.Password,
 		Scheme:    u.Scheme,
 		User:      u.User,
 		BatchSize: o.HttpBatchSize,
