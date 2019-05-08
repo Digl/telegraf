@@ -87,6 +87,10 @@ func (r *requestBody) addMetric(metric *HttpMetric) error {
 func (r *requestBody) close() error {
 	io.WriteString(r.w, "]")
 
+	if err := r.g.Close(); err != nil {
+		return fmt.Errorf("Error when closing gzip writer: %s", err.Error())
+	}
+
 	return nil
 }
 
@@ -133,7 +137,7 @@ func (o *kairosDBHttp) flush() error {
 	req.Header.Set("Content-Encoding", "identity")
 
 	if o.Username != "" || o.Password != "" {
-		req.SetBasicAuth(o.config.Username, o.config.Password)
+		req.SetBasicAuth(o.Username, o.Password)
 	}
 	if o.Debug {
 		dump, err := httputil.DumpRequestOut(req, false)
