@@ -129,7 +129,7 @@ func (o *kairosDBHttp) flush() error {
 	if err != nil {
 		return fmt.Errorf("Error when building request: %s", err.Error())
 	}
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", "application/gzip")
 	req.Header.Set("Content-Encoding", "identity")
 
 	if o.Username != "" || o.Password != "" {
