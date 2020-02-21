@@ -12,7 +12,9 @@ import (
 	monitoring "cloud.google.com/go/monitoring/apiv3" // Imports the Stackdriver Monitoring client package.
 	googlepb "github.com/golang/protobuf/ptypes/timestamp"
 	"github.com/influxdata/telegraf"
+	"github.com/influxdata/telegraf/internal"
 	"github.com/influxdata/telegraf/plugins/outputs"
+	"google.golang.org/api/option"
 	metricpb "google.golang.org/genproto/googleapis/api/metric"
 	monitoredrespb "google.golang.org/genproto/googleapis/api/monitoredres"
 	monitoringpb "google.golang.org/genproto/googleapis/monitoring/v3"
@@ -88,7 +90,7 @@ func (s *Stackdriver) Connect() error {
 
 	if s.client == nil {
 		ctx := context.Background()
-		client, err := monitoring.NewMetricClient(ctx)
+		client, err := monitoring.NewMetricClient(ctx, option.WithUserAgent(internal.ProductToken()))
 		if err != nil {
 			return err
 		}
@@ -199,7 +201,7 @@ func (s *Stackdriver) Write(metrics []telegraf.Metric) error {
 	for len(buckets) != 0 {
 		// can send up to 200 time series to stackdriver
 		timeSeries := make([]*monitoringpb.TimeSeries, 0, 200)
-		for i := 0; i < len(keys); i++ {
+		for i := 0; i < len(keys) && len(timeSeries) < cap(timeSeries); i++ {
 			k := keys[i]
 			s := buckets[k]
 			timeSeries = append(timeSeries, s[0])
@@ -212,10 +214,6 @@ func (s *Stackdriver) Write(metrics []telegraf.Metric) error {
 
 			s = s[1:]
 			buckets[k] = s
-
-			if len(timeSeries) == cap(timeSeries) {
-				break
-			}
 		}
 
 		// Prepare time series request.

@@ -5,14 +5,15 @@ import (
 	"fmt"
 	"log"
 	"strings"
-
-	"github.com/influxdata/telegraf"
-	tlsint "github.com/influxdata/telegraf/internal/tls"
-	"github.com/influxdata/telegraf/plugins/outputs"
-	"github.com/influxdata/telegraf/plugins/serializers"
-	uuid "github.com/satori/go.uuid"
+	"time"
 
 	"github.com/Shopify/sarama"
+	"github.com/gofrs/uuid"
+	"github.com/influxdata/telegraf"
+	tlsint "github.com/influxdata/telegraf/internal/tls"
+	"github.com/influxdata/telegraf/plugins/common/kafka"
+	"github.com/influxdata/telegraf/plugins/outputs"
+	"github.com/influxdata/telegraf/plugins/serializers"
 )
 
 var ValidTopicSuffixMethods = []string{
@@ -20,6 +21,8 @@ var ValidTopicSuffixMethods = []string{
 	"measurement",
 	"tags",
 }
+
+var zeroTime = time.Unix(0, 0)
 
 type (
 	Kafka struct {
@@ -44,12 +47,14 @@ type (
 		// TLS certificate authority
 		CA string
 
+		EnableTLS *bool `toml:"enable_tls"`
 		tlsint.ClientConfig
 
-		// SASL Username
 		SASLUsername string `toml:"sasl_username"`
-		// SASL Password
 		SASLPassword string `toml:"sasl_password"`
+		SASLVersion  *int   `toml:"sasl_version"`
+
+		Log telegraf.Logger `toml:"-"`
 
 		tlsConfig tls.Config
 		producer  sarama.SyncProducer
@@ -62,6 +67,26 @@ type (
 		Separator string   `toml:"separator"`
 	}
 )
+
+// DebugLogger logs messages from sarama at the debug level.
+type DebugLogger struct {
+}
+
+func (*DebugLogger) Print(v ...interface{}) {
+	args := make([]interface{}, 0, len(v)+1)
+	args = append(args, "D! [sarama] ")
+	log.Print(v...)
+}
+
+func (*DebugLogger) Printf(format string, v ...interface{}) {
+	log.Printf("D! [sarama] "+format, v...)
+}
+
+func (*DebugLogger) Println(v ...interface{}) {
+	args := make([]interface{}, 0, len(v)+1)
+	args = append(args, "D! [sarama] ")
+	log.Println(args...)
+}
 
 var sampleConfig = `
   ## URLs of kafka brokers
@@ -105,13 +130,21 @@ var sampleConfig = `
   #   keys = ["foo", "bar"]
   #   separator = "_"
 
-  ## Telegraf tag to use as a routing key
-  ##  ie, if this tag exists, its value will be used as the routing key
+  ## The routing tag specifies a tagkey on the metric whose value is used as
+  ## the message key.  The message key is used to determine which partition to
+  ## send the message to.  This tag is prefered over the routing_key option.
   routing_tag = "host"
 
-  ## Static routing key.  Used when no routing_tag is set or as a fallback
-  ## when the tag specified in routing tag is not found.  If set to "random",
-  ## a random value will be generated for each message.
+  ## The routing key is set as the message key and used to determine which
+  ## partition to send the message to.  This value is only used when no
+  ## routing_tag is set or as a fallback when the tag specified in routing tag
+  ## is not found.
+  ##
+  ## If set to "random", a random value will be generated for each message.
+  ##
+  ## When unset, no message key is added and each message is routed to a random
+  ## partition.
+  ##
   ##   ex: routing_key = "random"
   ##       routing_key = "telegraf"
   # routing_key = ""
@@ -149,6 +182,7 @@ var sampleConfig = `
   # max_message_bytes = 1000000
 
   ## Optional TLS Config
+  # enable_tls = true
   # tls_ca = "/etc/telegraf/ca.pem"
   # tls_cert = "/etc/telegraf/cert.pem"
   # tls_key = "/etc/telegraf/key.pem"
@@ -158,6 +192,9 @@ var sampleConfig = `
   ## Optional SASL Config
   # sasl_username = "kafka"
   # sasl_password = "secret"
+
+  ## SASL protocol version.  When connecting to Azure EventHub set to 0.
+  # sasl_version = 1
 
   ## Data format to output.
   ## Each data format has its own unique set of configuration options, read
@@ -237,6 +274,10 @@ func (k *Kafka) Connect() error {
 		k.TLSKey = k.Key
 	}
 
+	if k.EnableTLS != nil && *k.EnableTLS {
+		config.Net.TLS.Enable = true
+	}
+
 	tlsConfig, err := k.ClientConfig.TLSConfig()
 	if err != nil {
 		return err
@@ -244,13 +285,25 @@ func (k *Kafka) Connect() error {
 
 	if tlsConfig != nil {
 		config.Net.TLS.Config = tlsConfig
-		config.Net.TLS.Enable = true
+
+		// To maintain backwards compatibility, if the enable_tls option is not
+		// set TLS is enabled if a non-default TLS config is used.
+		if k.EnableTLS == nil {
+			k.Log.Warnf("Use of deprecated configuration: enable_tls should be set when using TLS")
+			config.Net.TLS.Enable = true
+		}
 	}
 
 	if k.SASLUsername != "" && k.SASLPassword != "" {
 		config.Net.SASL.User = k.SASLUsername
 		config.Net.SASL.Password = k.SASLPassword
 		config.Net.SASL.Enable = true
+
+		version, err := kafka.SASLVersion(config.Version, k.SASLVersion)
+		if err != nil {
+			return err
+		}
+		config.Net.SASL.Version = version
 	}
 
 	producer, err := sarama.NewSyncProducer(k.Brokers, config)
@@ -273,20 +326,23 @@ func (k *Kafka) Description() string {
 	return "Configuration for the Kafka server to send metrics to"
 }
 
-func (k *Kafka) routingKey(metric telegraf.Metric) string {
+func (k *Kafka) routingKey(metric telegraf.Metric) (string, error) {
 	if k.RoutingTag != "" {
 		key, ok := metric.GetTag(k.RoutingTag)
 		if ok {
-			return key
+			return key, nil
 		}
 	}
 
 	if k.RoutingKey == "random" {
-		u := uuid.NewV4()
-		return u.String()
+		u, err := uuid.NewV4()
+		if err != nil {
+			return "", err
+		}
+		return u.String(), nil
 	}
 
-	return k.RoutingKey
+	return k.RoutingKey, nil
 }
 
 func (k *Kafka) Write(metrics []telegraf.Metric) error {
@@ -294,14 +350,25 @@ func (k *Kafka) Write(metrics []telegraf.Metric) error {
 	for _, metric := range metrics {
 		buf, err := k.serializer.Serialize(metric)
 		if err != nil {
-			return err
+			k.Log.Debugf("Could not serialize metric: %v", err)
+			continue
 		}
 
 		m := &sarama.ProducerMessage{
 			Topic: k.GetTopicName(metric),
 			Value: sarama.ByteEncoder(buf),
 		}
-		key := k.routingKey(metric)
+
+		// Negative timestamps are not allowed by the Kafka protocol.
+		if !metric.Time().Before(zeroTime) {
+			m.Timestamp = metric.Time()
+		}
+
+		key, err := k.routingKey(metric)
+		if err != nil {
+			return fmt.Errorf("could not generate routing key: %v", err)
+		}
+
 		if key != "" {
 			m.Key = sarama.StringEncoder(key)
 		}
@@ -314,7 +381,11 @@ func (k *Kafka) Write(metrics []telegraf.Metric) error {
 		if errs, ok := err.(sarama.ProducerErrors); ok {
 			for _, prodErr := range errs {
 				if prodErr.Err == sarama.ErrMessageSizeTooLarge {
-					log.Printf("E! Error writing to output [kafka]: Message too large, consider increasing `max_message_bytes`; dropping batch")
+					k.Log.Error("Message too large, consider increasing `max_message_bytes`; dropping batch")
+					return nil
+				}
+				if prodErr.Err == sarama.ErrInvalidTimestamp {
+					k.Log.Error("The timestamp of the message is out of acceptable range, consider increasing broker `message.timestamp.difference.max.ms`; dropping batch")
 					return nil
 				}
 				return prodErr
@@ -327,6 +398,7 @@ func (k *Kafka) Write(metrics []telegraf.Metric) error {
 }
 
 func init() {
+	sarama.Logger = &DebugLogger{}
 	outputs.Add("kafka", func() telegraf.Output {
 		return &Kafka{
 			MaxRetry:     3,

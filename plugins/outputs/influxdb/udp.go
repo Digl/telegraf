@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"log"
 	"net"
 	"net/url"
 
@@ -32,9 +31,10 @@ type UDPConfig struct {
 	URL            *url.URL
 	Serializer     *influx.Serializer
 	Dialer         Dialer
+	Log            telegraf.Logger
 }
 
-func NewUDPClient(config *UDPConfig) (*udpClient, error) {
+func NewUDPClient(config UDPConfig) (*udpClient, error) {
 	if config.URL == nil {
 		return nil, ErrMissingURL
 	}
@@ -60,6 +60,7 @@ func NewUDPClient(config *UDPConfig) (*udpClient, error) {
 		url:        config.URL,
 		serializer: serializer,
 		dialer:     dialer,
+		log:        config.Log,
 	}
 	return client, nil
 }
@@ -69,6 +70,7 @@ type udpClient struct {
 	dialer     Dialer
 	serializer *influx.Serializer
 	url        *url.URL
+	log        telegraf.Logger
 }
 
 func (c *udpClient) URL() string {
@@ -93,7 +95,7 @@ func (c *udpClient) Write(ctx context.Context, metrics []telegraf.Metric) error 
 		if err != nil {
 			// Since we are serializing multiple metrics, don't fail the
 			// entire batch just because of one unserializable metric.
-			log.Printf("E! [outputs.influxdb] when writing to [%s] could not serialize metric: %v",
+			c.log.Errorf("When writing to [%s] could not serialize metric: %v",
 				c.URL(), err)
 			continue
 		}
@@ -113,7 +115,7 @@ func (c *udpClient) Write(ctx context.Context, metrics []telegraf.Metric) error 
 	return nil
 }
 
-func (c *udpClient) CreateDatabase(ctx context.Context) error {
+func (c *udpClient) CreateDatabase(ctx context.Context, database string) error {
 	return nil
 }
 
@@ -135,4 +137,7 @@ func scanLines(data []byte, atEOF bool) (advance int, token []byte, err error) {
 
 	}
 	return 0, nil, nil
+}
+
+func (c *udpClient) Close() {
 }

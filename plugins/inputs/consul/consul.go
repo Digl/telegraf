@@ -27,7 +27,7 @@ type Consul struct {
 
 var sampleConfig = `
   ## Consul server address
-  # address = "localhost"
+  # address = "localhost:8500"
 
   ## URI scheme for the Consul server, one of "http", "https"
   # scheme = "http"
@@ -126,12 +126,12 @@ func (c *Consul) GatherHealthCheck(acc telegraf.Accumulator, checks []*api.Healt
 		for _, checkTag := range check.ServiceTags {
 			if c.TagDelimiter != "" {
 				splittedTag := strings.SplitN(checkTag, c.TagDelimiter, 2)
-				if len(splittedTag) == 1 {
+				if len(splittedTag) == 1 && checkTag != "" {
 					tags[checkTag] = checkTag
-				} else if len(splittedTag) == 2 {
+				} else if len(splittedTag) == 2 && splittedTag[1] != "" {
 					tags[splittedTag[0]] = splittedTag[1]
 				}
-			} else {
+			} else if checkTag != "" {
 				tags[checkTag] = checkTag
 			}
 		}
