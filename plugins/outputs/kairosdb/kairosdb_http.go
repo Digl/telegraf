@@ -2,6 +2,7 @@ package kairosdb
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -23,6 +24,8 @@ type kairosDBHttp struct {
 	Host      string
 	Port      int
 	Scheme    string
+    user      string
+    password  string
 	User      *url.Userinfo
 	BatchSize int
 	Path      string
@@ -47,10 +50,16 @@ func (r *requestBody) reset(debug bool) {
 	r.b.Reset()
 	r.dbgB.Reset()
 
-	if debug {
-		r.w = io.MultiWriter(&r.b, &r.dbgB)
+	if r.g == nil {
+		r.g = gzip.NewWriter(&r.b)
 	} else {
-		r.w = &r.b
+		r.g.Reset(&r.b)
+	}
+
+	if debug {
+		r.w = io.MultiWriter(r.g, &r.dbgB)
+	} else {
+		r.w = r.g
 	}
 
 	r.enc = json.NewEncoder(r.w)
@@ -119,8 +128,12 @@ func (o *kairosDBHttp) flush() error {
 	if err != nil {
 		return fmt.Errorf("Error when building request: %s", err.Error())
 	}
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", "application/gzip")
 	//req.Header.Set("Content-Encoding", "gzip")
+
+//    if o.user != "" {
+//        req.SetBasicAuth(o.user, o.password)
+//    }
 
 	if o.Debug {
 		dump, err := httputil.DumpRequestOut(req, false)
